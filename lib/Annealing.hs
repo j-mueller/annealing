@@ -16,17 +16,18 @@ module Annealing(
   example
   ) where
 
-import Control.Concurrent (forkIO)
-import qualified Control.Concurrent.STM as STM
-import Control.DeepSeq (NFData, force)
-import Control.Exception (evaluate)
-import Control.Monad.Primitive (PrimMonad, PrimState)
-import qualified Data.List as List
-import GHC.Generics (Generic)
-import Streaming
-import qualified Streaming.Prelude as S
-import System.Random.MWC.Probability (Gen)
+import           Control.Concurrent            (forkIO)
+import qualified Control.Concurrent.STM        as STM
+import           Control.DeepSeq               (NFData, force)
+import           Control.Exception             (evaluate)
+import           Control.Monad.Primitive       (PrimState)
+import           Data.Foldable                 (traverse_)
+import qualified Data.List                     as List
+import           GHC.Generics                  (Generic)
+import           Streaming
+import qualified Streaming.Prelude             as S
 import qualified System.Random.MWC.Probability as P
+import           System.Random.MWC.Probability (Gen)
 
 {-| A candidate solution with its fitness
 -}
@@ -61,23 +62,23 @@ annealing ::
   NFData s
   => Gen (PrimState IO)
   -> (Int -> Double) -- ^ Temperature
-  -> (s -> Double) -- ^ Fitness function. 0 = perfect
-  -> s -- ^ Initial state
+  -> (s -> IO Double) -- ^ Fitness function. 0 = perfect
+  -> AssessedCandidate s -- ^ Initial state
   -> (s -> IO s) -- ^ Neighbour selection
   -> Stream (Of (AnnealingState (AssessedCandidate s))) IO () -- ^ Successive approximations
-annealing gen temp fitness s neighbours = flip S.unfoldr (initialState (AssessedCandidate s (fitness s))) $ \AnnealingState{asTime, asBestCandidate, asCurrentCandidate, asLastProbability} -> do
+annealing gen temp fitness s neighbours = flip S.unfoldr (initialState s) $ \AnnealingState{asTime, asBestCandidate, asCurrentCandidate, asLastProbability} -> do
   let currentTemp = temp asTime
       currentFit = acFitness asCurrentCandidate
-      assess c = AssessedCandidate c (fitness c)
+      assess c = AssessedCandidate c <$> fitness c
 
   let mkResultVar = do
           tv <- STM.atomically STM.newEmptyTMVar
-          forkIO (neighbours (acCandidate asCurrentCandidate) >>= evaluate . force . assess >>= STM.atomically . STM.putTMVar tv)
+          _ <- forkIO (neighbours (acCandidate asCurrentCandidate) >>= assess >>= evaluate . force >>= STM.atomically . STM.putTMVar tv)
           pure tv
 
       bestNeighbour :: IO (AssessedCandidate s)
       bestNeighbour = do
-        tvars <- sequence (fmap (const mkResultVar) [1..8])
+        tvars <- sequence (fmap (const mkResultVar) [1..8::Int])
         list <- traverse (STM.atomically . STM.readTMVar) tvars
         return $ head $ List.sortOn acFitness list
 
@@ -109,15 +110,16 @@ example :: IO ()
 example = do
   gen <- P.createSystemRandom
   putStrLn "Sampling..."
-  let stream =
+  let fitness s = abs (150 - s) -- fitness = deviation from actual mean
+      stream =
         annealing
           gen
           (\i -> 1 + (1 / fromIntegral i))
-          (\s -> abs (150 - s)) -- fitness = deviation from actual mean
-          (0 :: Double)
+          (pure . fitness)
+          (AssessedCandidate 0 (fitness 0))
           (\_ -> P.sample (P.normal 150 15) gen) -- try to guess the mean of a normal distribution
       p AnnealingState{asBestCandidate=AssessedCandidate{acFitness, acCandidate}} =
           show acCandidate <> " (" <> show acFitness <> ")"
 
-  let acc AnnealingState{asBestCandidate=AssessedCandidate{acFitness}} = acFitness < 0.05
-  S.head_ (S.dropWhile (not . acc) stream) >>= print
+  let accept AnnealingState{asBestCandidate=AssessedCandidate{acFitness}} = acFitness < 0.05
+  S.head_ (S.dropWhile (not . accept) stream) >>= traverse_ (putStrLn . p)
