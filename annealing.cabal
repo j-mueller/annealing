@@ -1,0 +1,35 @@
+cabal-version:      2.4
+name:               annealing
+version:            0.1.0.0
+license: Apache-2.0
+license-files:
+  LICENSE
+
+synopsis: Haskell implementation of simulated annealing
+bug-reports: https://github.com/j-mueller/annealing/issues
+author:             Jann Müller
+maintainer:         j-mueller@users.noreply.github.com
+
+common lang
+    default-language: Haskell2010
+    default-extensions: ExplicitForAll ScopedTypeVariables MultiParamTypeClasses
+                        DeriveGeneric StandaloneDeriving DeriveLift FlexibleContexts
+                        GeneralizedNewtypeDeriving DeriveFunctor DeriveFoldable
+                        DeriveTraversable ImportQualifiedPost
+    ghc-options: -Wall -Wnoncanonical-monad-instances -Wunused-packages
+                 -Wincomplete-uni-patterns -Wincomplete-record-updates
+                 -Wredundant-constraints -Widentities
+
+library
+  import: lang
+  hs-source-dirs:
+    lib
+  exposed-modules:
+    Annealing
+  build-depends:
+    base >=4.12 && <4.16,
+    streaming -any,
+    mwc-probability -any,
+    primitive,
+    stm -any,
+    deepseq -any
