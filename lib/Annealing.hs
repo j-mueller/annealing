@@ -18,8 +18,7 @@ module Annealing(
 
 import           Control.Concurrent            (forkIO)
 import qualified Control.Concurrent.STM        as STM
-import           Control.DeepSeq               (NFData, force)
-import           Control.Exception             (evaluate)
+import           Control.DeepSeq               (NFData)
 import           Control.Monad.Primitive       (PrimState)
 import           Data.Foldable                 (traverse_)
 import qualified Data.List                     as List
@@ -31,9 +30,10 @@ import           System.Random.MWC.Probability (Gen)
 
 {-| A candidate solution with its fitness
 -}
-data AssessedCandidate s =
+data AssessedCandidate s r =
   AssessedCandidate
     { acCandidate :: !s
+    , acResult    :: !r
     , acFitness   :: !Double
     }
     deriving stock (Show, Generic)
@@ -41,57 +41,59 @@ data AssessedCandidate s =
 
 {-| Annealing state
 -}
-data AnnealingState s =
+data AnnealingState candidate =
   AnnealingState
     { asTime             :: !Int
-    , asBestCandidate    :: !s
-    , asCurrentCandidate :: !s
+    , asBestCandidate    :: !candidate
+    , asCurrentCandidate :: !candidate
     , asLastProbability  :: !(Maybe Double)
     , asLastTemperature  :: !Double
     } deriving Show
 
-initialState :: s -> AnnealingState s
-initialState s = AnnealingState 1 s s Nothing 0
+initialState :: candidate -> AnnealingState candidate
+initialState candidate = AnnealingState 1 candidate candidate Nothing 0
 
 {-| The simulated annealing algorithm. It generates an infinite stream of
   'AnnealingState' values. Use @S.head_ $ S.dropWhile (not . accept)@ get
   the first solution that meets the acceptance criterion @accept@.
 -}
 annealing ::
-  forall s.
-  NFData s
-  => Gen (PrimState IO)
+  forall state result.
+  Gen (PrimState IO)
   -> (Int -> Double) -- ^ Temperature
-  -> (s -> IO Double) -- ^ Fitness function. 0 = perfect
-  -> AssessedCandidate s -- ^ Initial state
-  -> (s -> IO s) -- ^ Neighbour selection
-  -> Stream (Of (AnnealingState (AssessedCandidate s))) IO () -- ^ Successive approximations
-annealing gen temp fitness s neighbours = flip S.unfoldr (initialState s) $ \AnnealingState{asTime, asBestCandidate, asCurrentCandidate, asLastProbability} -> do
+  -> (state -> IO result) -- ^ Evaluation of current state
+  -> (result -> Double) -- ^ Fitness function. 0 = perfect
+  -> AssessedCandidate state result -- ^ Initial state
+  -> (state -> IO state) -- ^ Neighbour selection
+  -> Stream (Of (AnnealingState (AssessedCandidate state result))) IO () -- ^ Successive approximations
+annealing gen temp eval fitness s neighbours = flip S.unfoldr (initialState s) $ \AnnealingState{asTime, asBestCandidate, asCurrentCandidate, asLastProbability} -> do
   let currentTemp = temp asTime
       currentFit = acFitness asCurrentCandidate
-      assess c = AssessedCandidate c <$> fitness c
+      assess c = do
+        k <- eval c
+        pure $ AssessedCandidate c k (fitness k)
 
   let mkResultVar = do
           tv <- STM.atomically STM.newEmptyTMVar
-          _ <- forkIO (neighbours (acCandidate asCurrentCandidate) >>= assess >>= evaluate . force >>= STM.atomically . STM.putTMVar tv)
+          _ <- forkIO (neighbours (acCandidate asCurrentCandidate) >>= assess >>= STM.atomically . STM.putTMVar tv)
           pure tv
 
-      bestNeighbour :: IO (AssessedCandidate s)
+      bestNeighbour :: IO (AssessedCandidate state result)
       bestNeighbour = do
         tvars <- sequence (fmap (const mkResultVar) [1..8::Int])
         list <- traverse (STM.atomically . STM.readTMVar) tvars
         return $ head $ List.sortOn acFitness list
 
-      accept :: AssessedCandidate s -> IO (Maybe (AssessedCandidate s), Maybe Double)
-      accept AssessedCandidate{acCandidate=y, acFitness=newFit} = do
+      accept :: AssessedCandidate state result -> IO (Maybe (AssessedCandidate state result), Maybe Double)
+      accept AssessedCandidate{acCandidate=y, acFitness=newFit, acResult=yr} = do
         if newFit <= currentFit
-          then return $ (Just (AssessedCandidate y newFit), Nothing)
+          then return $ (Just (AssessedCandidate y yr newFit), Nothing)
           else do
             let r    = negate ((newFit - currentFit) / currentTemp)
                 rate = exp r
             shouldAccept <- P.sample (P.bernoulli rate) gen
             if shouldAccept
-              then return (Just (AssessedCandidate y newFit), Just rate)
+              then return (Just (AssessedCandidate y yr newFit), Just rate)
               else return (Nothing, Just rate)
 
   (newCandidate, newProb) <- bestNeighbour >>= accept
@@ -115,8 +117,9 @@ example = do
         annealing
           gen
           (\i -> 1 + (1 / fromIntegral i))
-          (pure . fitness)
-          (AssessedCandidate 0 (fitness 0))
+          pure
+          fitness
+          (AssessedCandidate 0 0 (fitness 0))
           (\_ -> P.sample (P.normal 150 15) gen) -- try to guess the mean of a normal distribution
       p AnnealingState{asBestCandidate=AssessedCandidate{acFitness, acCandidate}} =
           show acCandidate <> " (" <> show acFitness <> ")"
