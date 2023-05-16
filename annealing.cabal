@@ -27,7 +27,7 @@ library
   exposed-modules:
     Annealing
   build-depends:
-    base >=4.12 && <4.16,
+    base >=4.12,
     streaming -any,
     mwc-probability -any,
     primitive,
