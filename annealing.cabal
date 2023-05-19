@@ -31,5 +31,4 @@ library
     streaming -any,
     mwc-probability -any,
     primitive,
-    stm -any,
     deepseq -any

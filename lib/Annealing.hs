@@ -16,8 +16,6 @@ module Annealing(
   example
   ) where
 
-import           Control.Concurrent            (forkIO)
-import qualified Control.Concurrent.STM        as STM
 import           Control.DeepSeq               (NFData)
 import           Control.Monad.Primitive       (PrimState)
 import           Data.Foldable                 (traverse_)
@@ -64,7 +62,7 @@ annealing ::
   -> (state -> IO result) -- ^ Evaluation of current state
   -> (result -> Double) -- ^ Fitness function. 0 = perfect
   -> AssessedCandidate state result -- ^ Initial state
-  -> (state -> IO state) -- ^ Neighbour selection
+  -> (state -> Stream (Of state) IO ()) -- ^ Neighbour selection
   -> Stream (Of (AnnealingState (AssessedCandidate state result))) IO () -- ^ Successive approximations
 annealing gen temp eval fitness s neighbours = flip S.unfoldr (initialState s) $ \AnnealingState{asTime, asBestCandidate, asCurrentCandidate, asLastProbability} -> do
   let currentTemp = temp asTime
@@ -73,15 +71,9 @@ annealing gen temp eval fitness s neighbours = flip S.unfoldr (initialState s) $
         k <- eval c
         pure $ AssessedCandidate c k (fitness k)
 
-  let mkResultVar = do
-          tv <- STM.atomically STM.newEmptyTMVar
-          _ <- forkIO (neighbours (acCandidate asCurrentCandidate) >>= assess >>= STM.atomically . STM.putTMVar tv)
-          pure tv
-
-      bestNeighbour :: IO (AssessedCandidate state result)
+  let bestNeighbour :: IO (AssessedCandidate state result)
       bestNeighbour = do
-        tvars <- sequence (fmap (const mkResultVar) [1..8::Int])
-        list <- traverse (STM.atomically . STM.readTMVar) tvars
+        list <- S.toList_ $ S.mapM assess $ S.take 8 $ neighbours (acCandidate asCurrentCandidate)
         return $ head $ List.sortOn acFitness list
 
       accept :: AssessedCandidate state result -> IO (Maybe (AssessedCandidate state result), Maybe Double)
@@ -120,7 +112,7 @@ example = do
           pure
           fitness
           (AssessedCandidate 0 0 (fitness 0))
-          (\_ -> P.sample (P.normal 150 15) gen) -- try to guess the mean of a normal distribution
+          (\_ -> S.repeatM (P.sample (P.normal 150 15) gen)) -- try to guess the mean of a normal distribution
       p AnnealingState{asBestCandidate=AssessedCandidate{acFitness, acCandidate}} =
           show acCandidate <> " (" <> show acFitness <> ")"
 
