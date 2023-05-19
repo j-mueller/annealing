@@ -20,6 +20,7 @@ import           Control.DeepSeq               (NFData)
 import           Control.Monad.Primitive       (PrimState)
 import           Data.Foldable                 (traverse_)
 import qualified Data.List                     as List
+import           Data.Maybe                    (listToMaybe)
 import           GHC.Generics                  (Generic)
 import           Streaming
 import qualified Streaming.Prelude             as S
@@ -71,10 +72,10 @@ annealing gen temp eval fitness s neighbours = flip S.unfoldr (initialState s) $
         k <- eval c
         pure $ AssessedCandidate c k (fitness k)
 
-  let bestNeighbour :: IO (AssessedCandidate state result)
+  let bestNeighbour :: IO (Maybe (AssessedCandidate state result))
       bestNeighbour = do
         list <- S.toList_ $ S.mapM assess $ S.take 8 $ neighbours (acCandidate asCurrentCandidate)
-        return $ head $ List.sortOn acFitness list
+        return $ listToMaybe $ List.sortOn acFitness list
 
       accept :: AssessedCandidate state result -> IO (Maybe (AssessedCandidate state result), Maybe Double)
       accept AssessedCandidate{acCandidate=y, acFitness=newFit, acResult=yr} = do
@@ -88,7 +89,7 @@ annealing gen temp eval fitness s neighbours = flip S.unfoldr (initialState s) $
               then return (Just (AssessedCandidate y yr newFit), Just rate)
               else return (Nothing, Just rate)
 
-  (newCandidate, newProb) <- bestNeighbour >>= accept
+  (newCandidate, newProb) <- bestNeighbour >>= maybe (pure (Just asBestCandidate, asLastProbability)) accept
   let newTime = succ asTime
       newProb' = asLastProbability <|> newProb
       newState = case newCandidate of
