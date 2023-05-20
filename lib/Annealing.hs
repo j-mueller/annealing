@@ -59,13 +59,14 @@ initialState candidate = AnnealingState 1 candidate candidate Nothing 0
 annealing ::
   forall state result.
   Gen (PrimState IO)
+  -> Int -- ^ Number of candidates to assess in each round
   -> (Int -> Double) -- ^ Temperature
   -> (state -> IO result) -- ^ Evaluation of current state
   -> (result -> Double) -- ^ Fitness function. 0 = perfect
   -> AssessedCandidate state result -- ^ Initial state
   -> (state -> Stream (Of state) IO ()) -- ^ Neighbour selection
   -> Stream (Of (AnnealingState (AssessedCandidate state result))) IO () -- ^ Successive approximations
-annealing gen temp eval fitness s neighbours = flip S.unfoldr (initialState s) $ \AnnealingState{asTime, asBestCandidate, asCurrentCandidate, asLastProbability} -> do
+annealing gen numCandidates temp eval fitness s neighbours = flip S.unfoldr (initialState s) $ \AnnealingState{asTime, asBestCandidate, asCurrentCandidate, asLastProbability} -> do
   let currentTemp = temp asTime
       currentFit = acFitness asCurrentCandidate
       assess c = do
@@ -74,7 +75,7 @@ annealing gen temp eval fitness s neighbours = flip S.unfoldr (initialState s) $
 
   let bestNeighbour :: IO (Maybe (AssessedCandidate state result))
       bestNeighbour = do
-        list <- S.toList_ $ S.mapM assess $ S.take 8 $ neighbours (acCandidate asCurrentCandidate)
+        list <- S.toList_ $ S.mapM assess $ S.take numCandidates $ neighbours (acCandidate asCurrentCandidate)
         return $ listToMaybe $ List.sortOn acFitness list
 
       accept :: AssessedCandidate state result -> IO (Maybe (AssessedCandidate state result), Maybe Double)
@@ -109,6 +110,7 @@ example = do
       stream =
         annealing
           gen
+          8
           (\i -> 1 + (1 / fromIntegral i))
           pure
           fitness
